@@ -17,30 +17,49 @@ fixed-size state record; the library allocates nothing after construction.
 
 | Alert | Severity | Rule |
 |---|---|---|
-| `missing` | critical | no message for `miss_periods` periods (default 5) after the last one; fires once, at the deadline |
-| `recovered` | info | a missing node sends again, a degrading node has `degrade_streak` normal intervals, or a storm falls to half the limit; `cleared` says which |
-| `degrading` | warning | after `warmup_samples` intervals (default 20), `degrade_streak` (default 3) intervals in a row above `mean + max(k * deviation, period / 2)`, k = 4 |
+| `missing` | critical | no in-order message for `miss_periods` periods (default 5) after the last one; fires once, at the deadline |
+| `recovered` | info | a missing node sends again, a degrading node has `degrade_streak` normal intervals, or a storm falls to half the limit (at least 1); `cleared` says which |
+| `degrading` | warning | after `warmup_samples` intervals (default 20), `degrade_streak` (default 3) intervals in a row above `mean + max(k * deviation, period / 2)`, k = 4; fires once until it recovers |
 | `storm` | warning | more than `rate_max` messages in `rate_window` (default: 5 times the expected rate in 1 s, at least 5); counted in 10 buckets |
-| `duplicate` | warning | the same sequence number again within one boot |
-| `reordered` | warning | a lower sequence number within one boot |
-| `rebooted` | info | a new boot id, confirmed by a second, later message of the same boot; the sequence restarts and the gap is not a sample |
+| `duplicate` | warning | the same sequence number again within one boot; once per run, until the next in-order message |
+| `reordered` | warning | a stale message: a lower sequence number, or a lower boot counter; once per run, until the next in-order message |
+| `rebooted` | info | a higher boot counter; the sequence restarts and the gap is not a sample |
+
+## Boot counter and sequence numbers
+
+The boot id is a counter the node keeps in flash and raises on every start. A
+higher counter is a restart; a lower one is an old message replayed and is
+treated as stale. Messages are signed, so only the node can raise its counter.
+Sequence numbers are compared as serial numbers, so the wrap from 4294967295
+to 0 is forward.
+
+## Liveness and the baseline
+
+Every in-order message moves the deadline. A duplicate or stale message does
+not: a replayed message is not proof that the node is alive. A timestamp
+earlier than the last arrival moves nothing.
 
 Mean and deviation are exponentially weighted (alpha 1/16) and are updated
 only by normal intervals, so a slow streak does not teach the baseline to
 accept slowness. Intervals shorter than a quarter of the period are flood
-traffic: they count toward the storm rate but are not samples. A node whose
-real period changes keeps alerting until its configuration is updated.
+traffic: they keep the node alive and count toward the storm rate, but they
+are not samples. If a node's real period changes, `degrading` fires once and
+stays latched until the intervals fall back under the threshold, so the
+configuration has to follow the node.
 
-A duplicate or reordered message does not move the deadline, and neither
-does a single message carrying another boot id: a replayed message is not
-proof that the node is alive. Sequence numbers are compared as serial
-numbers, so the wrap from 4294967295 to 0 is forward. A timestamp earlier
-than the last arrival is ignored. Every arrival, valid or not, counts toward
-the storm rate. A node that goes missing during a storm drops the storm
-state; its return reports the missing node as recovered.
+Every arrival, valid or not, counts toward the storm rate. A missing node
+raises no storm; when it goes missing during one, the storm state is dropped
+and its return reports the missing node as recovered.
 
 `add_node` refuses a period or rate window above one hour, more than 1000
-miss periods, and a zero warm-up or streak.
+miss periods, a degrade factor above 400 (k = 100), and a zero warm-up or
+streak.
+
+## Timer
+
+`next_tick()` is the earliest time `on_tick` has work: a node's deadline, or
+the next rate bucket of a storming node so that a storm can clear while the
+node is still sending. The OS layer keeps one timer armed to it.
 
 Each alert carries the facts behind it: the last interval, the configured
 period, the learned baseline, the message count for a storm, the sequence

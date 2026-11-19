@@ -28,8 +28,8 @@ enum class AlertKind : std::uint8_t {
   kDegrading,  // intervals well above the learned baseline, several in a row
   kStorm,      // message rate above rate_max in the rate window
   kDuplicate,  // the same sequence number twice in one boot
-  kReordered,  // a sequence number lower than the last one in one boot
-  kRebooted,   // a new boot id
+  kReordered,  // stale: a lower sequence number, or an older boot
+  kRebooted,   // a higher boot counter
 };
 
 enum class Severity : std::uint8_t { kInfo, kWarning, kCritical };
@@ -87,12 +87,11 @@ struct NodeState {
   std::uint32_t normal_streak = 0;
 
   std::uint64_t boot = 0;
-  bool boot_pending = false;  // a new boot id was seen once, not yet confirmed
-  std::uint64_t pending_boot = 0;
-  std::uint32_t pending_seq = 0;
   std::uint32_t last_seq = 0;
   std::uint32_t seq_faults = 0;  // duplicates and reorders; one forgiven per 10 good messages
   std::uint32_t good_run = 0;
+  bool duplicate_latched = false;  // one alert per run of duplicates
+  bool reorder_latched = false;    // one alert per run of stale messages
 
   std::array<std::uint32_t, kRateBuckets> rate{};
   bool rate_started = false;
@@ -121,6 +120,11 @@ class Detector {
   // (never seen, or already missing). The OS layer arms its timer to this.
   Nanos deadline(std::size_t node) const noexcept;
 
+  // The earliest time on_tick has work to do: a node's deadline, or the next
+  // rate bucket of a storming node. 0 when nothing is pending. The OS layer
+  // keeps one timer armed to this.
+  Nanos next_tick() const noexcept;
+
   // 0-100; see docs/engine/detectors.md for the formula.
   int health(std::size_t node) const noexcept;
 
@@ -132,6 +136,7 @@ class Detector {
             std::uint32_t seq = 0, AlertKind cleared = AlertKind::kRecovered) noexcept;
   void recovered(std::size_t node, Nanos now, AlertKind cleared, std::uint32_t count = 0) noexcept;
   void update_timing(std::size_t index, Nanos now) noexcept;
+  void stale(std::size_t index, Nanos now, std::uint32_t seq) noexcept;
   void advance_rate(NodeState& n, Nanos now) noexcept;
   void check_storm(std::size_t index, Nanos now) noexcept;
   static std::uint32_t rate_count(const NodeState& n) noexcept;

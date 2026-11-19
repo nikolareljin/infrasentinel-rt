@@ -20,6 +20,7 @@ std::int32_t seq_diff(std::uint32_t a, std::uint32_t b) noexcept {
 // Limits that keep every product below the int64 range.
 constexpr Nanos kMaxPeriod = 3600 * kSecond;
 constexpr std::uint32_t kMaxMissPeriods = 1000;
+constexpr std::uint32_t kMaxDegradeFactorX4 = 400;
 
 }  // namespace
 
@@ -59,7 +60,8 @@ std::size_t Detector::add_node(std::string_view name, const NodeConfig& config) 
   if (name.empty() || name.size() > kNodeNameMax || count_ == kMaxNodes) return kMaxNodes;
   if (config.period <= 0 || config.period > kMaxPeriod || config.miss_periods == 0 ||
       config.miss_periods > kMaxMissPeriods || config.rate_window <= 0 ||
-      config.rate_window > kMaxPeriod || config.degrade_streak == 0 || config.warmup_samples == 0) {
+      config.rate_window > kMaxPeriod || config.degrade_streak == 0 || config.warmup_samples == 0 ||
+      config.degrade_factor_x4 > kMaxDegradeFactorX4) {
     return kMaxNodes;
   }
   if (find(name) != kMaxNodes) return kMaxNodes;
@@ -103,7 +105,8 @@ void Detector::recovered(std::size_t index, Nanos now, AlertKind cleared,
 std::uint32_t Detector::rate_limit(const NodeConfig& c) noexcept {
   if (c.rate_max > 0) return c.rate_max;
   const Nanos expected = c.rate_window / c.period;
-  return static_cast<std::uint32_t>(std::max<Nanos>(5, 5 * expected));
+  const Nanos limit = std::clamp<Nanos>(5 * expected, 5, 0x7FFFFFFF);
+  return static_cast<std::uint32_t>(limit);
 }
 
 std::uint32_t Detector::rate_count(const NodeState& n) noexcept {
@@ -140,7 +143,7 @@ void Detector::check_storm(std::size_t index, Nanos now) noexcept {
   if (!n.storming && count > limit) {
     n.storming = true;
     emit(AlertKind::kStorm, Severity::kWarning, index, now, count);
-  } else if (n.storming && count <= limit / 2) {
+  } else if (n.storming && count <= std::max<std::uint32_t>(1, limit / 2)) {
     n.storming = false;
     recovered(index, now, AlertKind::kStorm, count);
   }
@@ -149,11 +152,11 @@ void Detector::check_storm(std::size_t index, Nanos now) noexcept {
 void Detector::update_timing(std::size_t index, Nanos now) noexcept {
   NodeState& n = nodes_[index];
   const Nanos interval = now - n.last_arrival;
-  if (interval <= 0) return;  // a clock that went backwards is not a sample
+  if (interval <= 0) return;  // a clock that went backwards moves nothing
+  n.last_arrival = now;       // any in-order message is proof of life
   // Much faster than configured is flood traffic, counted by the storm rule;
   // it must not teach the baseline a cadence the node does not have.
   if (interval < n.config.period / 4) return;
-  n.last_arrival = now;
   n.last_interval = interval;
 
   if (n.samples < n.config.warmup_samples) {
@@ -193,10 +196,11 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
   if (index >= count_) return;
   NodeState& n = nodes_[index];
 
-  // Every arrival counts toward the rate, valid or not.
+  // Every arrival counts toward the rate, valid or not; a missing node raises
+  // no storm (its return is reported as recovered first).
   advance_rate(n, now);
   ++n.rate[n.rate_head];
-  check_storm(index, now);
+  if (!n.missing) check_storm(index, now);
 
   if (!n.seen) {
     n.seen = true;
@@ -206,42 +210,43 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     return;
   }
 
-  if (boot != n.boot) {
-    // A new boot id is accepted only when a second, later message of the same
-    // boot follows; a single replayed message from another boot proves nothing.
-    if (!n.boot_pending || n.pending_boot != boot || seq_diff(seq, n.pending_seq) <= 0) {
-      n.boot_pending = true;
-      n.pending_boot = boot;
-      n.pending_seq = seq;
-      return;
-    }
-    n.boot_pending = false;
+  // The boot id is a counter the node keeps across restarts: a higher one is a
+  // restart, a lower one is an old message replayed and proves nothing.
+  if (boot < n.boot) {
+    stale(index, now, seq);
+    return;
+  }
+  if (boot > n.boot) {
     n.boot = boot;
     n.last_seq = seq;
+    n.duplicate_latched = false;
+    n.reorder_latched = false;
     emit(AlertKind::kRebooted, Severity::kInfo, index, now, 0, seq);
+    if (now > n.last_arrival) n.last_arrival = now;  // the gap across a restart is not a sample
     if (n.missing) {
       n.missing = false;
       recovered(index, now, AlertKind::kMissing);
     }
-    if (now > n.last_arrival) n.last_arrival = now;  // the gap across a reboot is not a sample
     return;
   }
-  n.boot_pending = false;
 
   const std::int32_t step = seq_diff(seq, n.last_seq);
   if (step == 0) {
     ++n.seq_faults;
     n.good_run = 0;
-    emit(AlertKind::kDuplicate, Severity::kWarning, index, now, 0, seq);
+    if (!n.duplicate_latched) {
+      n.duplicate_latched = true;
+      emit(AlertKind::kDuplicate, Severity::kWarning, index, now, 0, seq);
+    }
     return;  // a repeated message does not prove the node is alive
   }
   if (step < 0) {
-    ++n.seq_faults;
-    n.good_run = 0;
-    emit(AlertKind::kReordered, Severity::kWarning, index, now, 0, seq);
+    stale(index, now, seq);
     return;
   }
   n.last_seq = seq;
+  n.duplicate_latched = false;
+  n.reorder_latched = false;
   if (n.seq_faults > 0 && ++n.good_run >= 10) {
     --n.seq_faults;
     n.good_run = 0;
@@ -254,6 +259,16 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     return;
   }
   update_timing(index, now);
+}
+
+void Detector::stale(std::size_t index, Nanos now, std::uint32_t seq) noexcept {
+  NodeState& n = nodes_[index];
+  ++n.seq_faults;
+  n.good_run = 0;
+  if (!n.reorder_latched) {
+    n.reorder_latched = true;
+    emit(AlertKind::kReordered, Severity::kWarning, index, now, 0, seq);
+  }
 }
 
 void Detector::on_tick(Nanos now) noexcept {
@@ -281,6 +296,22 @@ Nanos Detector::deadline(std::size_t index) const noexcept {
   const NodeState& n = nodes_[index];
   if (!n.seen || n.missing) return 0;
   return n.last_arrival + static_cast<Nanos>(n.config.miss_periods) * n.config.period;
+}
+
+Nanos Detector::next_tick() const noexcept {
+  Nanos next = 0;
+  for (std::size_t i = 0; i < count_; ++i) {
+    const NodeState& n = nodes_[i];
+    Nanos t = deadline(i);
+    if (n.storming && n.rate_started) {
+      const Nanos width =
+          std::max<Nanos>(1, n.config.rate_window / static_cast<Nanos>(kRateBuckets));
+      const Nanos bucket = n.rate_bucket_start + width;
+      if (t == 0 || bucket < t) t = bucket;
+    }
+    if (t != 0 && (next == 0 || t < next)) next = t;
+  }
+  return next;
 }
 
 int Detector::health(std::size_t index) const noexcept {
