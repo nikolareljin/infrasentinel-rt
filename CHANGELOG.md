@@ -14,6 +14,7 @@
   sequence that never wraps within a boot, one alert per run of
   duplicates or stale messages), `next_tick()` for the OS timer, a learned per-node baseline and a
   0-100 health score; fixed-size state, time passed in by the caller.
+- Storm rate counters saturate instead of wrapping.
 - Project skeleton: CMake engine with version and platform, a test harness
   without third-party dependencies, `./dev`, simulator payload signing,
   documentation site, CI.
