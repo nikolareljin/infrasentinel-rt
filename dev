@@ -57,6 +57,7 @@ cmd_lint() {
     (cd "$ISRT_ROOT" && run_tool clang-format silkeh/clang:18 --dry-run --Werror "${cpp[@]}") || rc=1
   fi
   (cd "$ISRT_ROOT" && run_tool ruff ghcr.io/astral-sh/ruff:0.8.4 check simulator) || rc=1
+  (cd "$ISRT_ROOT" && run_tool ruff ghcr.io/astral-sh/ruff:0.8.4 format --check simulator) || rc=1
   mapfile -t sh < <(cd "$ISRT_ROOT" && git ls-files '*.sh' dev)
   (cd "$ISRT_ROOT" && run_tool shellcheck koalaman/shellcheck:v0.10.0 -x "${sh[@]}") || rc=1
   return "$rc"

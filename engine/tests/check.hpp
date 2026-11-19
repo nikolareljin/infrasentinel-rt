@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace isrt::test {
