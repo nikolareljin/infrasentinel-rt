@@ -48,6 +48,7 @@ struct Alert {
   Nanos baseline;       // learned mean interval, 0 before warm-up
   std::uint32_t count;  // messages in the rate window (storm), else 0
   std::uint32_t seq;    // sequence number involved, else 0
+  AlertKind cleared;    // for kRecovered: what cleared (missing, degrading, storm)
 };
 
 class AlertSink {
@@ -86,6 +87,9 @@ struct NodeState {
   std::uint32_t normal_streak = 0;
 
   std::uint64_t boot = 0;
+  bool boot_pending = false;  // a new boot id was seen once, not yet confirmed
+  std::uint64_t pending_boot = 0;
+  std::uint32_t pending_seq = 0;
   std::uint32_t last_seq = 0;
   std::uint32_t seq_faults = 0;  // duplicates and reorders; one forgiven per 10 good messages
   std::uint32_t good_run = 0;
@@ -125,7 +129,8 @@ class Detector {
 
  private:
   void emit(AlertKind kind, Severity severity, std::size_t node, Nanos now, std::uint32_t count = 0,
-            std::uint32_t seq = 0) noexcept;
+            std::uint32_t seq = 0, AlertKind cleared = AlertKind::kRecovered) noexcept;
+  void recovered(std::size_t node, Nanos now, AlertKind cleared, std::uint32_t count = 0) noexcept;
   void update_timing(std::size_t index, Nanos now) noexcept;
   void advance_rate(NodeState& n, Nanos now) noexcept;
   void check_storm(std::size_t index, Nanos now) noexcept;

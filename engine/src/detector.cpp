@@ -11,6 +11,16 @@ Nanos abs_nanos(Nanos v) noexcept { return v < 0 ? -v : v; }
 // EWMA step with alpha 1/16, in integers.
 Nanos ewma(Nanos mean, Nanos sample) noexcept { return mean + (sample - mean) / 16; }
 
+// Serial-number comparison (RFC 1982 style): positive when `a` is after `b`,
+// so the wrap from 0xFFFFFFFF to 0 counts as forward.
+std::int32_t seq_diff(std::uint32_t a, std::uint32_t b) noexcept {
+  return static_cast<std::int32_t>(a - b);
+}
+
+// Limits that keep every product below the int64 range.
+constexpr Nanos kMaxPeriod = 3600 * kSecond;
+constexpr std::uint32_t kMaxMissPeriods = 1000;
+
 }  // namespace
 
 std::string_view to_string(AlertKind kind) noexcept {
@@ -47,8 +57,9 @@ std::string_view to_string(Severity severity) noexcept {
 
 std::size_t Detector::add_node(std::string_view name, const NodeConfig& config) noexcept {
   if (name.empty() || name.size() > kNodeNameMax || count_ == kMaxNodes) return kMaxNodes;
-  if (config.period <= 0 || config.miss_periods == 0 || config.rate_window <= 0 ||
-      config.degrade_streak == 0) {
+  if (config.period <= 0 || config.period > kMaxPeriod || config.miss_periods == 0 ||
+      config.miss_periods > kMaxMissPeriods || config.rate_window <= 0 ||
+      config.rate_window > kMaxPeriod || config.degrade_streak == 0 || config.warmup_samples == 0) {
     return kMaxNodes;
   }
   if (find(name) != kMaxNodes) return kMaxNodes;
@@ -68,7 +79,7 @@ std::size_t Detector::find(std::string_view name) const noexcept {
 }
 
 void Detector::emit(AlertKind kind, Severity severity, std::size_t index, Nanos now,
-                    std::uint32_t count, std::uint32_t seq) noexcept {
+                    std::uint32_t count, std::uint32_t seq, AlertKind cleared) noexcept {
   const NodeState& n = nodes_[index];
   Alert a{};
   a.kind = kind;
@@ -80,7 +91,13 @@ void Detector::emit(AlertKind kind, Severity severity, std::size_t index, Nanos 
   a.baseline = n.samples >= n.config.warmup_samples ? n.mean_interval : 0;
   a.count = count;
   a.seq = seq;
+  a.cleared = cleared;
   sink_.emit(a);
+}
+
+void Detector::recovered(std::size_t index, Nanos now, AlertKind cleared,
+                         std::uint32_t count) noexcept {
+  emit(AlertKind::kRecovered, Severity::kInfo, index, now, count, 0, cleared);
 }
 
 std::uint32_t Detector::rate_limit(const NodeConfig& c) noexcept {
@@ -125,13 +142,17 @@ void Detector::check_storm(std::size_t index, Nanos now) noexcept {
     emit(AlertKind::kStorm, Severity::kWarning, index, now, count);
   } else if (n.storming && count <= limit / 2) {
     n.storming = false;
-    emit(AlertKind::kRecovered, Severity::kInfo, index, now, count);
+    recovered(index, now, AlertKind::kStorm, count);
   }
 }
 
 void Detector::update_timing(std::size_t index, Nanos now) noexcept {
   NodeState& n = nodes_[index];
   const Nanos interval = now - n.last_arrival;
+  if (interval <= 0) return;  // a clock that went backwards is not a sample
+  // Much faster than configured is flood traffic, counted by the storm rule;
+  // it must not teach the baseline a cadence the node does not have.
+  if (interval < n.config.period / 4) return;
   n.last_arrival = now;
   n.last_interval = interval;
 
@@ -163,7 +184,7 @@ void Detector::update_timing(std::size_t index, Nanos now) noexcept {
   n.mean_interval = ewma(n.mean_interval, interval);
   if (n.degrading && n.normal_streak >= n.config.degrade_streak) {
     n.degrading = false;
-    emit(AlertKind::kRecovered, Severity::kInfo, index, now);
+    recovered(index, now, AlertKind::kDegrading);
   }
 }
 
@@ -186,24 +207,35 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
   }
 
   if (boot != n.boot) {
+    // A new boot id is accepted only when a second, later message of the same
+    // boot follows; a single replayed message from another boot proves nothing.
+    if (!n.boot_pending || n.pending_boot != boot || seq_diff(seq, n.pending_seq) <= 0) {
+      n.boot_pending = true;
+      n.pending_boot = boot;
+      n.pending_seq = seq;
+      return;
+    }
+    n.boot_pending = false;
     n.boot = boot;
     n.last_seq = seq;
     emit(AlertKind::kRebooted, Severity::kInfo, index, now, 0, seq);
     if (n.missing) {
       n.missing = false;
-      emit(AlertKind::kRecovered, Severity::kInfo, index, now);
+      recovered(index, now, AlertKind::kMissing);
     }
-    n.last_arrival = now;  // the interval across a reboot is not a sample
+    if (now > n.last_arrival) n.last_arrival = now;  // the gap across a reboot is not a sample
     return;
   }
+  n.boot_pending = false;
 
-  if (seq == n.last_seq) {
+  const std::int32_t step = seq_diff(seq, n.last_seq);
+  if (step == 0) {
     ++n.seq_faults;
     n.good_run = 0;
     emit(AlertKind::kDuplicate, Severity::kWarning, index, now, 0, seq);
     return;  // a repeated message does not prove the node is alive
   }
-  if (seq < n.last_seq) {
+  if (step < 0) {
     ++n.seq_faults;
     n.good_run = 0;
     emit(AlertKind::kReordered, Severity::kWarning, index, now, 0, seq);
@@ -217,8 +249,8 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
 
   if (n.missing) {
     n.missing = false;
-    n.last_arrival = now;  // the silent gap is not a sample
-    emit(AlertKind::kRecovered, Severity::kInfo, index, now);
+    if (now > n.last_arrival) n.last_arrival = now;  // the silent gap is not a sample
+    recovered(index, now, AlertKind::kMissing);
     return;
   }
   update_timing(index, now);
@@ -227,17 +259,19 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
 void Detector::on_tick(Nanos now) noexcept {
   for (std::size_t i = 0; i < count_; ++i) {
     NodeState& n = nodes_[i];
-    if (n.storming) {
-      advance_rate(n, now);
-      check_storm(i, now);
-    }
     const Nanos due = deadline(i);
     if (due != 0 && now >= due) {
       n.missing = true;
       n.degrading = false;
+      n.storming = false;  // a silent node has no storm; its return is the recovery
       n.slow_streak = 0;
       n.normal_streak = 0;
       emit(AlertKind::kMissing, Severity::kCritical, i, now);
+      continue;
+    }
+    if (n.storming) {
+      advance_rate(n, now);
+      check_storm(i, now);
     }
   }
 }
