@@ -1,0 +1,10 @@
+site_name: InfraSentinel RT
+site_description: Deterministic telemetry watchdog for QNX 8.0
+repo_url: https://github.com/nikolareljin/infrasentinel-rt
+copyright: Copyright 2026 Nik Reljin. Apache-2.0.
+theme:
+  name: mkdocs
+nav:
+  - Home: index.md
+  - Build and run: build.md
+  - Codelab: codelab/index.md

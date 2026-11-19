@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Developer entry point for InfraSentinel RT.
+#
+# Usage: ./dev <command> [args]
+#   build        configure and build the engine for Linux (build/)
+#   test         engine tests, simulator tests and script tests
+#   test-engine  engine tests only (ISRT_SANITIZE=1 for sanitizers)
+#   test-sim     simulator tests only
+#   test-scripts shell tests only
+#   lint         clang-format check, ruff, shellcheck
+#   docs         build the documentation site (site/)
+#   clean        remove build output
+#   help         this text
+set -euo pipefail
+
+ISRT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ISRT_ROOT
+# shellcheck source=scripts/lib/log.sh
+source "$ISRT_ROOT/scripts/lib/log.sh"
+# shellcheck source=scripts/lib/tools.sh
+source "$ISRT_ROOT/scripts/lib/tools.sh"
+
+build_dir="${ISRT_BUILD_DIR:-$ISRT_ROOT/build}"
+
+usage() { sed -n '2,/^set -euo/p' "$ISRT_ROOT/dev" | sed '$d' | sed 's/^# \{0,1\}//'; }
+
+cmd_build() {
+  need cmake
+  local sanitize=OFF
+  [[ "${ISRT_SANITIZE:-0}" == 1 ]] && sanitize=ON
+  cmake -S "$ISRT_ROOT" -B "$build_dir" -DCMAKE_BUILD_TYPE=Debug -DISRT_SANITIZE="$sanitize"
+  cmake --build "$build_dir" --parallel
+}
+
+cmd_test_engine() {
+  cmd_build
+  ctest --test-dir "$build_dir" --output-on-failure
+}
+
+cmd_test_sim() {
+  need python3
+  (cd "$ISRT_ROOT/simulator" && python3 -m pytest -q)
+}
+
+cmd_test_scripts() {
+  local t rc=0
+  for t in "$ISRT_ROOT"/scripts/tests/test_*.sh; do
+    bash "$t" || rc=1
+  done
+  return "$rc"
+}
+
+cmd_lint() {
+  local rc=0
+  mapfile -t cpp < <(cd "$ISRT_ROOT" && git ls-files '*.cpp' '*.hpp')
+  if [[ ${#cpp[@]} -gt 0 ]]; then
+    (cd "$ISRT_ROOT" && run_tool clang-format silkeh/clang:18 --dry-run --Werror "${cpp[@]}") || rc=1
+  fi
+  (cd "$ISRT_ROOT" && run_tool ruff ghcr.io/astral-sh/ruff:0.8.4 check simulator) || rc=1
+  mapfile -t sh < <(cd "$ISRT_ROOT" && git ls-files '*.sh' dev)
+  (cd "$ISRT_ROOT" && run_tool shellcheck koalaman/shellcheck:v0.10.0 -x "${sh[@]}") || rc=1
+  return "$rc"
+}
+
+cmd_docs() {
+  need python3
+  python3 -m mkdocs build --strict -f "$ISRT_ROOT/mkdocs.yml"
+}
+
+cmd_clean() { rm -rf "$build_dir" "$ISRT_ROOT/site"; }
+
+main() {
+  local cmd="${1:-help}"
+  [[ $# -gt 0 ]] && shift
+  case "$cmd" in
+    build) cmd_build "$@" ;;
+    test) cmd_test_engine && cmd_test_sim && cmd_test_scripts ;;
+    test-engine) cmd_test_engine ;;
+    test-sim) cmd_test_sim ;;
+    test-scripts) cmd_test_scripts ;;
+    lint) cmd_lint ;;
+    docs) cmd_docs ;;
+    clean) cmd_clean ;;
+    help | -h | --help) usage ;;
+    *)
+      log_error "unknown command: $cmd"
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
