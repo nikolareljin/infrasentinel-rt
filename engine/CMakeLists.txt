@@ -1,6 +1,7 @@
 add_library(isrt_core
   src/version.cpp
   src/platform.cpp
+  src/detector.cpp
 )
 target_include_directories(isrt_core PUBLIC include)
 target_compile_definitions(isrt_core PRIVATE ISRT_VERSION_STRING="${PROJECT_VERSION}")
@@ -20,7 +21,7 @@ add_executable(isrt src/main.cpp)
 target_link_libraries(isrt PRIVATE isrt_core)
 target_compile_options(isrt PRIVATE ${ISRT_WARNINGS})
 
-add_executable(isrt_tests tests/test_main.cpp tests/test_version.cpp)
+add_executable(isrt_tests tests/test_main.cpp tests/test_version.cpp tests/test_detector.cpp)
 target_link_libraries(isrt_tests PRIVATE isrt_core)
 target_compile_options(isrt_tests PRIVATE ${ISRT_WARNINGS})
 add_test(NAME isrt_tests COMMAND isrt_tests)

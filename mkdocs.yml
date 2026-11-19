@@ -7,4 +7,6 @@ theme:
 nav:
   - Home: index.md
   - Build and run: build.md
+  - Engine:
+      - Detectors: engine/detectors.md
   - Codelab: codelab/index.md
