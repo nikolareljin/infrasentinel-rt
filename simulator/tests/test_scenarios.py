@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from isrt_sim.scenarios import SCENARIOS
+from isrt_sim.scenarios import SCENARIOS, S
 
 ROOT = Path(__file__).resolve().parents[2]
 BIN = ROOT / "build" / "engine" / "isrt"
@@ -89,6 +89,14 @@ def test_old_boot_replay_does_not_flip_the_boot():
     out = replay("replay")
     a = alerts(out)
     assert a[("esp01", "rebooted")] == 1  # the real restart only
-    assert a[("esp01", "missing")] == 0
     assert a[("esp01", "reordered")] >= 1  # the replays are stale
-    assert health(out)["esp01"] > 0
+
+
+def test_old_boot_replay_does_not_keep_a_silent_node_alive():
+    out = replay("replay")
+    missing = [o for o in out if o.get("node") == "esp01" and o.get("kind") == "missing"]
+    assert len(missing) == 1
+    assert 20 * S < missing[0]["t"] < 21 * S  # while the replays are still arriving
+    recovered = [o for o in out if o.get("node") == "esp01" and o.get("kind") == "recovered"]
+    assert [o["cleared"] for o in recovered] == ["missing"]
+    assert recovered[0]["t"] >= 24 * S

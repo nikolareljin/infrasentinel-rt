@@ -100,6 +100,10 @@ class Scenario:
             if t >= self.duration:
                 break
             flood_until(t)
+            if self._active(node.name, "replay", t):
+                # Someone else replays an old message from the first boot; it
+                # keeps coming while the node itself is silent.
+                emit(t + 0.002, node.boot, 1)
             if self._active(node.name, "offline", t):
                 continue
             for i, f in enumerate(self._faults(node.name, "reboot")):
@@ -110,8 +114,6 @@ class Scenario:
             emit(t, boot, seq)
             if self._active(node.name, "duplicate", t):
                 emit(t + 0.001, boot, seq)
-            if self._active(node.name, "replay", t):
-                emit(t + 0.002, node.boot, 1)  # an old message from the first boot
         return events
 
 
@@ -125,7 +127,7 @@ SCENARIOS: dict[str, Scenario] = {
         Scenario("normal", "Three nodes, normal jitter: no alerts.", 60, _three()),
         Scenario(
             "offline",
-            "esp01 loses power at 20 s and comes back at 40 s.",
+            "esp01's link drops at 20 s and returns at 40 s (the node keeps running).",
             60,
             _three(),
             [Fault("offline", "esp01", 20, 40)],
@@ -160,10 +162,15 @@ SCENARIOS: dict[str, Scenario] = {
         ),
         Scenario(
             "replay",
-            "Old esp01 messages from its first boot are replayed after it restarts.",
+            "esp01 restarts at 10 s; from 20 s to 24 s it is silent while old "
+            "messages from its first boot are replayed.",
             40,
             _three(),
-            [Fault("reboot", "esp01", 10), Fault("replay", "esp01", 20, 22)],
+            [
+                Fault("reboot", "esp01", 10),
+                Fault("offline", "esp01", 20, 24),
+                Fault("replay", "esp01", 20, 24),
+            ],
         ),
     ]
 }

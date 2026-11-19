@@ -21,7 +21,7 @@ source "$ISRT_ROOT/scripts/lib/log.sh"
 # shellcheck source=scripts/lib/tools.sh
 source "$ISRT_ROOT/scripts/lib/tools.sh"
 
-build_dir="${ISRT_BUILD_DIR:-$ISRT_ROOT/build}"
+build_dir="$ISRT_ROOT/build"  # the scenario tests read build/engine/isrt
 
 usage() { sed -n '2,/^set -euo/p' "$ISRT_ROOT/dev" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
@@ -71,7 +71,7 @@ cmd_scenario() {
     (cd "$ISRT_ROOT/simulator" && python3 -m isrt_sim list)
     return
   fi
-  [[ -x "$engine" ]] || cmd_build >/dev/null
+  cmd_build >/dev/null  # incremental; never replay through a stale engine
   (cd "$ISRT_ROOT/simulator" && python3 -m isrt_sim events "$name") | "$engine" replay
 }
 

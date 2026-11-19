@@ -59,3 +59,17 @@ TEST_CASE("replay refuses malformed input with the line number") {
   CHECK(run("node esp01 100\nmsg 10 esp01 zz 1\n").rc == 1);
   CHECK(run("frob 10\n").rc == 1);
 }
+
+TEST_CASE("replay refuses numbers the stream would half-read") {
+  const std::string head = "node esp01 100\n";
+  CHECK(has(run(head + "msg 1 esp01 1 -1\n").err, "line 2: seq is not a 32-bit number"));
+  CHECK(run(head + "msg 1 esp01 1 4294967296\n").rc == 1);
+  CHECK(run(head + "msg 1 esp01 1zz 2\n").rc == 1);
+  CHECK(run(head + "msg 1 esp01 1 2 3\n").rc == 1);
+  CHECK(run(head + "msg 12abc esp01 1 2\n").rc == 1);
+  CHECK(run(head + "msg -5 esp01 1 2\n").rc == 1);
+  CHECK(run("node esp01 -100\n").rc == 1);
+  CHECK(run("node esp01 100 -1\n").rc == 1);
+  CHECK(run("node esp01 99999999999999\n").rc == 1);
+  CHECK(run(head + "msg 1 esp01 FFFFFFFFFFFFFFFF 4294967295\nend 1\n").rc == 0);
+}
