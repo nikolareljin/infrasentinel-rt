@@ -96,7 +96,13 @@ def test_old_boot_replay_does_not_keep_a_silent_node_alive():
     out = replay("replay")
     missing = [o for o in out if o.get("node") == "esp01" and o.get("kind") == "missing"]
     assert len(missing) == 1
-    assert 20 * S < missing[0]["t"] < 21 * S  # while the replays are still arriving
+    assert 20 * S < missing[0]["t"] < 21 * S
+    stale_after = [
+        int(w[1])
+        for w in (line.split() for line in SCENARIOS["replay"].lines())
+        if w[0] == "msg" and w[2] == "esp01" and w[3] == "1" and int(w[1]) > missing[0]["t"]
+    ]
+    assert stale_after, "replays must still be arriving when missing fires"
     recovered = [o for o in out if o.get("node") == "esp01" and o.get("kind") == "recovered"]
     assert [o["cleared"] for o in recovered] == ["missing"]
     assert recovered[0]["t"] >= 24 * S

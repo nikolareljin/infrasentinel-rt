@@ -15,7 +15,8 @@ msg  <t_ns> <name> <boot_hex> <seq>
 end  <t_ns>
 ```
 
-Times are monotonic nanoseconds and must not decrease. Numbers are whole
+Times are monotonic nanoseconds up to `kMaxMessageTime` (INT64_MAX / 2, about
+146 years) and must not decrease. Numbers are whole
 words with no sign: `seq` fits in 32 bits, `boot_hex` in 64, `period_ms` is at
 most one hour. A malformed line, including extra words, stops the run with
 exit code 1 and the line number on standard error.

@@ -72,4 +72,6 @@ TEST_CASE("replay refuses numbers the stream would half-read") {
   CHECK(run("node esp01 100 -1\n").rc == 1);
   CHECK(run("node esp01 99999999999999\n").rc == 1);
   CHECK(run(head + "msg 1 esp01 FFFFFFFFFFFFFFFF 4294967295\nend 1\n").rc == 0);
+  CHECK(run(head + "msg 4611686018427387903 esp01 1 1\n").rc == 0);  // kMaxMessageTime
+  CHECK(run(head + "msg 4611686018427387904 esp01 1 1\n").rc == 1);
 }

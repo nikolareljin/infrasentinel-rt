@@ -71,7 +71,12 @@ cmd_scenario() {
     (cd "$ISRT_ROOT/simulator" && python3 -m isrt_sim list)
     return
   fi
-  cmd_build >/dev/null  # incremental; never replay through a stale engine
+  # Incremental; never replay through a stale engine, keep the configured options.
+  if [[ -f "$build_dir/CMakeCache.txt" ]]; then
+    cmake --build "$build_dir" --parallel >/dev/null
+  else
+    cmd_build >/dev/null
+  fi
   (cd "$ISRT_ROOT/simulator" && python3 -m isrt_sim events "$name") | "$engine" replay
 }
 

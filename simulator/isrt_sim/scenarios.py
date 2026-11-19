@@ -104,13 +104,13 @@ class Scenario:
                 # Someone else replays an old message from the first boot; it
                 # keeps coming while the node itself is silent.
                 emit(t + 0.002, node.boot, 1)
-            if self._active(node.name, "offline", t):
-                continue
             for i, f in enumerate(self._faults(node.name, "reboot")):
                 if i not in rebooted and t >= f.start:
                     rebooted.add(i)
                     boot, seq = f"{i + 2:x}", 0
             seq += 1
+            if self._active(node.name, "offline", t):
+                continue  # the node sends, the link loses it: seq still rises
             emit(t, boot, seq)
             if self._active(node.name, "duplicate", t):
                 emit(t + 0.001, boot, seq)

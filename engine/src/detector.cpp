@@ -11,11 +11,7 @@ Nanos abs_nanos(Nanos v) noexcept { return v < 0 ? -v : v; }
 // EWMA step with alpha 1/16, in integers.
 Nanos ewma(Nanos mean, Nanos sample) noexcept { return mean + (sample - mean) / 16; }
 
-// Times beyond this (about 146 years of monotonic clock) are ignored, so every
-// sum of a time and a configured span stays inside int64.
-constexpr Nanos kMaxNow = INT64_MAX / 2;
-
-bool usable_time(Nanos now) noexcept { return now >= 0 && now <= kMaxNow; }
+bool usable_time(Nanos now) noexcept { return now >= 0 && now <= kMaxMessageTime; }
 
 // Faults counted toward health; the penalty stops at 20 (4 faults) anyway.
 constexpr std::uint32_t kMaxSeqFaults = 4;

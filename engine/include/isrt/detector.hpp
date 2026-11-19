@@ -17,6 +17,9 @@ using Nanos = std::int64_t;
 
 constexpr Nanos kMillisecond = 1'000'000;
 constexpr Nanos kSecond = 1'000'000'000;
+// Latest time on_message accepts (about 146 years of monotonic clock), so
+// every sum of a stored time and a configured span stays inside int64.
+constexpr Nanos kMaxMessageTime = INT64_MAX / 2;
 
 constexpr std::size_t kMaxNodes = 32;
 constexpr std::size_t kNodeNameMax = 23;  // bytes, without the terminator

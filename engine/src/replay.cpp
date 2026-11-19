@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <istream>
-#include <limits>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -68,7 +67,8 @@ bool parse_number(const std::string& word, int base, std::uint64_t max, std::uin
 }
 
 constexpr std::uint64_t kMaxPeriodMs = 3'600'000;  // the detector's one-hour cap
-constexpr std::uint64_t kMaxTime = static_cast<std::uint64_t>(std::numeric_limits<Nanos>::max());
+// The detector ignores messages after kMaxMessageTime; refuse them here instead.
+constexpr std::uint64_t kMaxTime = static_cast<std::uint64_t>(kMaxMessageTime);
 
 }  // namespace
 
