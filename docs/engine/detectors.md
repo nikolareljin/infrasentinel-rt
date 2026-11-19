@@ -9,7 +9,8 @@ fixed-size state record; the library allocates nothing after construction.
 ## Inputs
 
 Time (`now`) is monotonic nanoseconds. Times below 0 or above `INT64_MAX / 2`
-(about 146 years) are ignored, so no sum of a time and a span overflows.
+(about 146 years) are ignored by `on_message`, so no sum of a stored time and a
+span overflows; `on_tick` takes any non-negative time.
 
 | Call | When |
 |---|---|
@@ -53,8 +54,9 @@ only by normal intervals, so a slow streak does not teach the baseline to
 accept slowness. Intervals shorter than a quarter of the period are flood
 traffic: they keep the node alive and count toward the storm rate, but they
 are not samples. If a node's real period changes, `degrading` fires once and
-stays latched until the intervals fall back under the threshold, so the
-configuration has to follow the node.
+stays latched until `degrade_streak` intervals in a row are back under the
+threshold and at least a quarter of the period, so the configuration has to
+follow the node.
 
 Every arrival, valid or not, counts toward the storm rate. A missing node
 raises no storm; when it goes missing during one, the storm state is dropped

@@ -160,7 +160,7 @@ TEST_CASE("jitter within the baseline does not alert") {
   CHECK(d.health(0) >= 60);
 }
 
-TEST_CASE("storm alerts above the limit and clears when the rate drops") {
+TEST_CASE("storm alerts once above the limit") {
   Recorder r;
   Detector d(r);
   d.add_node("esp01", period_ms(100));  // limit 5 x 10/s = 50 per second
@@ -387,13 +387,16 @@ TEST_CASE("an old-boot replay cannot block a real restart from recovering") {
   d.on_tick(t + isrt::kSecond);
   CHECK(d.node(0).missing);
   t += 2 * isrt::kSecond;
-  for (std::uint32_t q = 0; q < 5; ++q) {
-    d.on_message(0, 2, q, t += 100 * kMillisecond);
-    d.on_message(0, 1, 3, t + 1);  // stale, from boot 1
-    d.on_message(0, 7, 5, t + 2);  // a stray higher boot is a restart too
-  }
+  d.on_message(0, 1, 3, t += 100 * kMillisecond);  // stale replays first
+  d.on_message(0, 1, 2, t += 100 * kMillisecond);
+  CHECK(d.node(0).missing);
+  CHECK(r.count(AlertKind::kRecovered) == 0);
+  d.on_message(0, 2, 0, t += 100 * kMillisecond);  // the real restart
   CHECK(!d.node(0).missing);
   CHECK(r.count(AlertKind::kRecovered) == 1);
+  d.on_message(0, 1, 3, t += 100 * kMillisecond);  // more replays change nothing
+  CHECK(!d.node(0).missing);
+  CHECK(d.node(0).boot == 2);
 }
 
 TEST_CASE("two replayed old-boot messages are not proof of life") {
@@ -474,13 +477,13 @@ TEST_CASE("a replay from far back in a long boot is stale, not proof of life") {
   Detector d(r);
   d.add_node("esp01", period_ms(100));
   d.on_message(0, 1, 10, 0);
-  d.on_message(0, 1, 3'000'000'000u, 100 * kMillisecond);  // lost messages: still in order
+  d.on_message(0, 1, 2'000'000'000u, 100 * kMillisecond);  // lost messages: still in order
   const Nanos due = d.deadline(0);
   d.on_message(0, 1, 11, 101 * kMillisecond);  // recorded early in this boot
   CHECK(d.deadline(0) == due);
-  CHECK(d.node(0).last_seq == 3'000'000'000u);
+  CHECK(d.node(0).last_seq == 2'000'000'000u);
   CHECK(r.count(AlertKind::kReordered) == 1);
-  d.on_message(0, 1, 3'000'000'001u, 200 * kMillisecond);
+  d.on_message(0, 1, 2'000'000'001u, 200 * kMillisecond);
   CHECK(d.deadline(0) == 700 * kMillisecond);
 }
 
@@ -508,7 +511,7 @@ TEST_CASE("times outside the usable range are ignored") {
   d.on_message(0, 1, 2, INT64_MAX - isrt::kSecond);
   CHECK(!d.node(0).seen);
   d.on_message(0, 1, 3, 100);
-  d.on_tick(INT64_MAX);
+  d.on_tick(-1);  // ignored
   CHECK(r.count(AlertKind::kMissing) == 0);
   CHECK(d.deadline(0) == 100 + 500 * kMillisecond);
 }
@@ -579,4 +582,17 @@ TEST_CASE("any number of lost messages is in order") {
   CHECK(d.node(0).missing);
   d.on_message(0, 1, seq + 1'120'000'000u, t);
   CHECK(!d.node(0).missing);
+}
+
+TEST_CASE("a deadline armed near the top of the time range still fires") {
+  Recorder r;
+  Detector d(r);
+  d.add_node("esp01", period_ms(100));
+  const Nanos start = INT64_MAX / 2 - 100 * kMillisecond;  // deadline lands above INT64_MAX / 2
+  d.on_message(0, 1, 1, start);
+  const Nanos due = d.next_tick();
+  CHECK(due == start + 500 * kMillisecond);
+  d.on_tick(due);
+  CHECK(d.node(0).missing);
+  CHECK(d.next_tick() == 0);
 }

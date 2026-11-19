@@ -284,7 +284,9 @@ void Detector::stale(std::size_t index, Nanos now, std::uint32_t seq) noexcept {
 }
 
 void Detector::on_tick(Nanos now) noexcept {
-  if (!usable_time(now)) return;
+  // Any non-negative time: stored arrivals are at most INT64_MAX / 2, so a
+  // deadline armed from the last accepted message is always reachable.
+  if (now < 0) return;
   for (std::size_t i = 0; i < count_; ++i) {
     NodeState& n = nodes_[i];
     const Nanos due = deadline(i);
