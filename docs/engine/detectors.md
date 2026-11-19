@@ -8,6 +8,8 @@ fixed-size state record; the library allocates nothing after construction.
 
 ## Inputs
 
+Time (`now`) is monotonic nanoseconds, never negative.
+
 | Call | When |
 |---|---|
 | `on_message(node, boot, seq, now)` | a message with a valid signature arrived |
@@ -20,7 +22,7 @@ fixed-size state record; the library allocates nothing after construction.
 | `missing` | critical | no in-order message for `miss_periods` periods (default 5) after the last one; fires once, at the deadline |
 | `recovered` | info | a missing node sends again, a degrading node has `degrade_streak` normal intervals, or a storm falls to half the limit (at least 1); `cleared` says which |
 | `degrading` | warning | after `warmup_samples` intervals (default 20), `degrade_streak` (default 3) intervals in a row above `mean + max(k * deviation, period / 2)`, k = 4; fires once until it recovers |
-| `storm` | warning | more than `rate_max` messages in `rate_window` (default: 5 times the expected rate in 1 s, at least 5); counted in 10 buckets |
+| `storm` | warning | more than `rate_max` messages in `rate_window` (default: 5 times the number of periods that fit in `rate_window`, rounded down, at least 5); counted in 10 buckets |
 | `duplicate` | warning | the same sequence number again within one boot; once per run, until the next in-order message |
 | `reordered` | warning | a stale message: a lower sequence number, or a lower boot counter; once per run, until the next in-order message |
 | `rebooted` | info | a higher boot counter; the sequence restarts and the gap is not a sample |
@@ -36,13 +38,17 @@ allows for the time since the last message (one rate window more than has
 passed); a bigger jump is an old message from far back in a long boot and is
 stale. After a long outage the allowance grows with the outage, so a node
 whose messages were lost meanwhile is accepted. The first message after the
-engine starts has nothing to compare against and is accepted as it is.
+engine starts has nothing to compare against and is accepted as it is; if it
+was a replay, real traffic is stale until the allowance has grown past the
+gap. More than 2^31 lost sequence numbers cannot be ordered at all; a node
+that restarts raises its boot counter, which resets the comparison.
 
 ## Liveness and the baseline
 
 Every in-order message moves the deadline. A duplicate or stale message does
-not: a replayed message is not proof that the node is alive. A timestamp
-earlier than the last arrival moves nothing.
+not: a replayed message is not proof that the node is alive. A message
+stamped no later than the last arrival moves nothing and does not end an
+outage.
 
 Mean and deviation are exponentially weighted (alpha 1/16) and are updated
 only by normal intervals, so a slow streak does not teach the baseline to

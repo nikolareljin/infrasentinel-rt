@@ -228,7 +228,10 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     n.duplicate_latched = false;
     n.reorder_latched = false;
     emit(AlertKind::kRebooted, Severity::kInfo, index, now, 0, seq);
-    if (now > n.last_arrival) n.last_arrival = now;  // the gap across a restart is not a sample
+    // A message stamped no later than the last arrival moves nothing, so it
+    // cannot end an outage either.
+    if (now <= n.last_arrival) return;
+    n.last_arrival = now;  // the gap across a restart is not a sample
     if (n.missing) {
       n.missing = false;
       recovered(index, now, AlertKind::kMissing);
@@ -262,8 +265,9 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
   }
 
   if (n.missing) {
+    if (now <= n.last_arrival) return;  // stamped before the outage: moves nothing
     n.missing = false;
-    if (now > n.last_arrival) n.last_arrival = now;  // the silent gap is not a sample
+    n.last_arrival = now;  // the silent gap is not a sample
     recovered(index, now, AlertKind::kMissing);
     return;
   }
@@ -275,7 +279,7 @@ std::uint32_t Detector::max_seq_step(const NodeState& n, Nanos now) noexcept {
   const Nanos windows = elapsed / n.config.rate_window + 1;
   const Nanos limit = static_cast<Nanos>(rate_limit(n.config));
   // windows <= 2^62 / 10 ms and limit < 2^31: cap before multiplying.
-  const Nanos cap = kSeqBehind / 2;
+  const Nanos cap = kSeqBehind - 1;  // the whole serial window
   if (windows >= cap / limit) return static_cast<std::uint32_t>(cap);
   return static_cast<std::uint32_t>(std::min(cap, windows * limit));
 }

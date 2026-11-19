@@ -518,3 +518,37 @@ TEST_CASE("add_node refuses a rate window under 10 ms") {
   c.rate_window = 5 * kMillisecond;
   CHECK(d.add_node("a", c) == kMaxNodes);
 }
+
+TEST_CASE("a message stamped before an outage does not end it") {
+  Recorder r;
+  Detector d(r);
+  d.add_node("esp01", period_ms(100));
+  std::uint32_t seq = 0;
+  feed(d, 0, 0, 100 * kMillisecond, 3, seq);  // last at 300 ms
+  tick_until(d, 2 * isrt::kSecond);
+  CHECK(r.count(AlertKind::kMissing) == 1);
+  d.on_message(0, 1, ++seq, 150 * kMillisecond);  // same boot, stamped earlier
+  d.on_message(0, 2, 1, 160 * kMillisecond);      // a restart, stamped earlier
+  tick_until(d, 3 * isrt::kSecond);
+  CHECK(d.node(0).missing);
+  CHECK(r.count(AlertKind::kRecovered) == 0);
+  CHECK(r.count(AlertKind::kMissing) == 1);
+  d.on_message(0, 2, 2, 3 * isrt::kSecond + 1);
+  CHECK(!d.node(0).missing);
+  CHECK(r.count(AlertKind::kRecovered) == 1);
+}
+
+TEST_CASE("the forward allowance reaches the whole serial window") {
+  Recorder r;
+  Detector d(r);
+  NodeConfig c = period_ms(1);
+  d.add_node("fast", c);
+  std::uint32_t seq = 0;
+  Nanos t = feed(d, 0, 0, kMillisecond, 3, seq);
+  // 13 days silent at 1 ms: about 1.12e9 messages lost, more than 2^30
+  t += 13LL * 24 * 3600 * isrt::kSecond;
+  tick_until(d, t);
+  CHECK(d.node(0).missing);
+  d.on_message(0, 1, seq + 1'120'000'000u, t);
+  CHECK(!d.node(0).missing);
+}
