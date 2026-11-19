@@ -18,7 +18,15 @@ run_tool() {
   if have "$cmd"; then
     "$cmd" "$@"
   elif have docker; then
-    docker run --rm -u "$(id -u):$(id -g)" -v "$ISRT_ROOT:/src" -w /src "$image" "$cmd" "$@"
+    # Images that set the tool as their entrypoint take only the arguments.
+    local entry
+    docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
+    entry="$(docker image inspect -f '{{join .Config.Entrypoint " "}}' "$image")"
+    if [[ -n "$entry" ]]; then
+      docker run --rm -u "$(id -u):$(id -g)" -v "$ISRT_ROOT:/src" -w /src "$image" "$@"
+    else
+      docker run --rm -u "$(id -u):$(id -g)" -v "$ISRT_ROOT:/src" -w /src "$image" "$cmd" "$@"
+    fi
   else
     die "$cmd is not installed and docker is not available"
   fi
