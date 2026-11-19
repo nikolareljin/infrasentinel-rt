@@ -7,6 +7,7 @@
 #   test-engine  engine tests only (ISRT_SANITIZE=1 for sanitizers)
 #   test-sim     simulator tests only
 #   test-scripts shell tests only
+#   scenario <name>  run a simulator scenario through the engine (list: scenario list)
 #   lint         clang-format check, ruff, shellcheck
 #   docs         build the documentation site (site/)
 #   clean        remove build output
@@ -63,6 +64,17 @@ cmd_lint() {
   return "$rc"
 }
 
+cmd_scenario() {
+  need python3
+  local name="${1:-list}" engine="$build_dir/engine/isrt"
+  if [[ "$name" == list ]]; then
+    (cd "$ISRT_ROOT/simulator" && python3 -m isrt_sim list)
+    return
+  fi
+  [[ -x "$engine" ]] || cmd_build >/dev/null
+  (cd "$ISRT_ROOT/simulator" && python3 -m isrt_sim events "$name") | "$engine" replay
+}
+
 cmd_docs() {
   need python3
   python3 -m mkdocs build --strict -f "$ISRT_ROOT/mkdocs.yml"
@@ -79,6 +91,7 @@ main() {
     test-engine) cmd_test_engine ;;
     test-sim) cmd_test_sim ;;
     test-scripts) cmd_test_scripts ;;
+    scenario) cmd_scenario "$@" ;;
     lint) cmd_lint ;;
     docs) cmd_docs ;;
     clean) cmd_clean ;;

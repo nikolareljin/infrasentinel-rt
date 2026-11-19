@@ -9,4 +9,6 @@ nav:
   - Build and run: build.md
   - Engine:
       - Detectors: engine/detectors.md
+      - Replay: engine/replay.md
+  - Simulator: simulator.md
   - Codelab: codelab/index.md
