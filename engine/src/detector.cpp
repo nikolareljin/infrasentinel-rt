@@ -114,7 +114,9 @@ std::uint32_t Detector::rate_limit(const NodeConfig& c) noexcept {
 
 std::uint32_t Detector::rate_count(const NodeState& n) noexcept {
   std::uint32_t total = 0;
-  for (std::uint32_t b : n.rate) total += b;
+  for (std::uint32_t b : n.rate) {
+    total = total > UINT32_MAX - b ? UINT32_MAX : total + b;  // saturate
+  }
   return total;
 }
 
@@ -205,7 +207,7 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
   // Every arrival counts toward the rate, valid or not; a missing node raises
   // no storm (its return is reported as recovered first).
   advance_rate(n, now);
-  ++n.rate[n.rate_head];
+  if (n.rate[n.rate_head] < UINT32_MAX) ++n.rate[n.rate_head];
   if (!n.missing) check_storm(index, now);
 
   if (!n.seen) {
