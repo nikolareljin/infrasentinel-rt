@@ -30,6 +30,21 @@ NodeConfig period_ms(Nanos ms) {
   return c;
 }
 
+// Runs every timer tick due at or before `t`, as the OS layer would.
+void tick_until(Detector& d, Nanos t) {
+  while (d.next_tick() != 0 && d.next_tick() <= t) d.on_tick(d.next_tick());
+}
+
+// Like feed, with the timer ticking between messages.
+Nanos feed_ticking(Detector& d, std::size_t node, Nanos t, Nanos step, int n, std::uint32_t& seq) {
+  for (int i = 0; i < n; ++i) {
+    t += step;
+    tick_until(d, t);
+    d.on_message(node, 1, ++seq, t);
+  }
+  return t;
+}
+
 // Feeds `n` messages `step` apart starting after `t`; returns the last time.
 Nanos feed(Detector& d, std::size_t node, Nanos t, Nanos step, int n, std::uint32_t& seq) {
   for (int i = 0; i < n; ++i) {
@@ -181,14 +196,16 @@ TEST_CASE("a storm clears on a timer tick while the node is still alive") {
 TEST_CASE("a storm clears with a limit of 1") {
   Recorder r;
   Detector d(r);
-  NodeConfig c = period_ms(100);
+  NodeConfig c = period_ms(1000);  // deadline 5 s, window 1 s
   c.rate_max = 1;
   d.add_node("esp01", c);
   std::uint32_t seq = 0;
-  Nanos t = feed(d, 0, 0, 50 * kMillisecond, 5, seq);
+  Nanos t = feed_ticking(d, 0, 0, 50 * kMillisecond, 5, seq);
   CHECK(d.node(0).storming);
-  feed(d, 0, t + isrt::kSecond, isrt::kSecond, 2, seq);
+  t = feed_ticking(d, 0, t, 1100 * kMillisecond, 4, seq);  // one per window, under the deadline
   CHECK(!d.node(0).storming);
+  CHECK(!d.node(0).missing);
+  CHECK(r.count(AlertKind::kMissing) == 0);
 }
 
 TEST_CASE("duplicates and reorders alert and do not refresh liveness") {
@@ -328,13 +345,19 @@ TEST_CASE("a storm that ends reports what recovered") {
   Detector d(r);
   d.add_node("esp01", period_ms(100));
   std::uint32_t seq = 0;
-  Nanos t = feed(d, 0, 0, 5 * kMillisecond, 60, seq);
-  feed(d, 0, t + isrt::kSecond, 100 * kMillisecond, 3, seq);
+  Nanos t = feed_ticking(d, 0, 0, 100 * kMillisecond, 25, seq);  // warm-up
+  t = feed_ticking(d, 0, t, 5 * kMillisecond, 60, seq);          // flood
+  CHECK(r.count(AlertKind::kStorm) == 1);
+  feed_ticking(d, 0, t, 100 * kMillisecond, 30, seq);
+  CHECK(r.count(AlertKind::kMissing) == 0);
   CHECK(r.count(AlertKind::kRecovered) == 1);
-  CHECK(r.count(AlertKind::kDegrading) == 0);  // flood intervals did not become the baseline
+  CHECK(r.count(AlertKind::kDegrading) == 0);
   for (const auto& a : r.alerts) {
     if (a.kind == AlertKind::kRecovered) CHECK(a.cleared == AlertKind::kStorm);
   }
+  // flood intervals were not samples: the baseline is still the 100 ms cadence
+  CHECK(d.node(0).mean_interval >= 90 * kMillisecond);
+  CHECK(d.node(0).mean_interval <= 110 * kMillisecond);
 }
 
 TEST_CASE("time going backwards is ignored") {
@@ -439,4 +462,59 @@ TEST_CASE("next_tick is the earliest deadline or storm bucket") {
   feed(d, 0, 0, 5 * kMillisecond, 60, seq);  // storm on a
   CHECK(d.node(0).storming);
   CHECK(d.next_tick() == d.node(0).rate_bucket_start + 100 * kMillisecond);
+}
+
+TEST_CASE("a replay from far back in a long boot is stale, not proof of life") {
+  Recorder r;
+  Detector d(r);
+  d.add_node("esp01", period_ms(100));
+  d.on_message(0, 1, 10, 0);
+  // in order, each step within what the storm limit allows for the time passed
+  Nanos t = 0;
+  std::uint32_t seq = 10;
+  for (int i = 0; i < 4; ++i) {
+    t += 100 * kMillisecond;
+    seq += 1;
+    d.on_message(0, 1, seq, t);
+  }
+  const Nanos due = d.deadline(0);
+  d.on_message(0, 1, seq + 1000000u, t + kMillisecond);  // far more than 1 ms allows
+  CHECK(d.deadline(0) == due);
+  CHECK(d.node(0).last_seq == seq);
+  CHECK(r.count(AlertKind::kReordered) == 1);
+  d.on_message(0, 1, seq + 1, t + 100 * kMillisecond);  // genuine traffic still counts
+  CHECK(d.deadline(0) == t + 600 * kMillisecond);
+  CHECK(r.count(AlertKind::kMissing) == 0);
+}
+
+TEST_CASE("a node back after a long outage may have advanced its sequence a lot") {
+  Recorder r;
+  Detector d(r);
+  d.add_node("esp01", period_ms(100));
+  std::uint32_t seq = 0;
+  Nanos t = feed(d, 0, 0, 100 * kMillisecond, 3, seq);
+  tick_until(d, t + 3600 * isrt::kSecond);
+  CHECK(d.node(0).missing);
+  // an hour later, messages it sent meanwhile were lost: seq moved by 36000
+  d.on_message(0, 1, seq + 36000, t + 3600 * isrt::kSecond);
+  CHECK(!d.node(0).missing);
+}
+
+TEST_CASE("sequence faults stop counting at the health floor") {
+  Recorder r;
+  Detector d(r);
+  d.add_node("esp01", period_ms(100));
+  std::uint32_t seq = 0;
+  Nanos t = feed(d, 0, 0, 100 * kMillisecond, 3, seq);
+  for (int i = 1; i <= 100; ++i) d.on_message(0, 1, seq, t + i);
+  CHECK(d.node(0).seq_faults == 4);
+  CHECK(d.health(0) >= 0);
+}
+
+TEST_CASE("add_node refuses a rate window under 10 ms") {
+  Recorder r;
+  Detector d(r);
+  NodeConfig c = period_ms(100);
+  c.rate_window = 5 * kMillisecond;
+  CHECK(d.add_node("a", c) == kMaxNodes);
 }

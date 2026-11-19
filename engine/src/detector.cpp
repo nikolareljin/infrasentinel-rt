@@ -11,11 +11,14 @@ Nanos abs_nanos(Nanos v) noexcept { return v < 0 ? -v : v; }
 // EWMA step with alpha 1/16, in integers.
 Nanos ewma(Nanos mean, Nanos sample) noexcept { return mean + (sample - mean) / 16; }
 
-// Serial-number comparison (RFC 1982 style): positive when `a` is after `b`,
-// so the wrap from 0xFFFFFFFF to 0 counts as forward.
-std::int32_t seq_diff(std::uint32_t a, std::uint32_t b) noexcept {
-  return static_cast<std::int32_t>(a - b);
-}
+// Serial-number distance (RFC 1982 style): how far `a` is ahead of `b`, with
+// the wrap from 0xFFFFFFFF to 0 counted as forward. 0 means equal; a value of
+// 2^31 or more means `a` is behind `b`. Unsigned only, so it is portable.
+std::uint32_t seq_ahead(std::uint32_t a, std::uint32_t b) noexcept { return a - b; }
+constexpr std::uint32_t kSeqBehind = 0x80000000u;
+
+// Faults counted toward health; the penalty stops at 20 (4 faults) anyway.
+constexpr std::uint32_t kMaxSeqFaults = 4;
 
 // Limits that keep every product below the int64 range.
 constexpr Nanos kMaxPeriod = 3600 * kSecond;
@@ -59,7 +62,7 @@ std::string_view to_string(Severity severity) noexcept {
 std::size_t Detector::add_node(std::string_view name, const NodeConfig& config) noexcept {
   if (name.empty() || name.size() > kNodeNameMax || count_ == kMaxNodes) return kMaxNodes;
   if (config.period <= 0 || config.period > kMaxPeriod || config.miss_periods == 0 ||
-      config.miss_periods > kMaxMissPeriods || config.rate_window <= 0 ||
+      config.miss_periods > kMaxMissPeriods || config.rate_window < 10 * kMillisecond ||
       config.rate_window > kMaxPeriod || config.degrade_streak == 0 || config.warmup_samples == 0 ||
       config.degrade_factor_x4 > kMaxDegradeFactorX4) {
     return kMaxNodes;
@@ -151,7 +154,10 @@ void Detector::check_storm(std::size_t index, Nanos now) noexcept {
 
 void Detector::update_timing(std::size_t index, Nanos now) noexcept {
   NodeState& n = nodes_[index];
-  const Nanos interval = now - n.last_arrival;
+  // Capped at the deadline span: a late tick cannot make an interval large
+  // enough to overflow the threshold arithmetic.
+  const Nanos interval =
+      std::min(now - n.last_arrival, static_cast<Nanos>(n.config.miss_periods) * n.config.period);
   if (interval <= 0) return;  // a clock that went backwards moves nothing
   n.last_arrival = now;       // any in-order message is proof of life
   // Much faster than configured is flood traffic, counted by the storm rule;
@@ -230,9 +236,9 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     return;
   }
 
-  const std::int32_t step = seq_diff(seq, n.last_seq);
-  if (step == 0) {
-    ++n.seq_faults;
+  const std::uint32_t ahead = seq_ahead(seq, n.last_seq);
+  if (ahead == 0) {
+    n.seq_faults = std::min(n.seq_faults + 1, kMaxSeqFaults);
     n.good_run = 0;
     if (!n.duplicate_latched) {
       n.duplicate_latched = true;
@@ -240,7 +246,10 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     }
     return;  // a repeated message does not prove the node is alive
   }
-  if (step < 0) {
+  // A node cannot move its sequence faster than the storm limit allows for the
+  // time that passed; a bigger jump is an old message from far back in this
+  // boot (the serial window has gone round) and proves nothing.
+  if (ahead >= kSeqBehind || ahead > max_seq_step(n, now)) {
     stale(index, now, seq);
     return;
   }
@@ -261,9 +270,19 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
   update_timing(index, now);
 }
 
+std::uint32_t Detector::max_seq_step(const NodeState& n, Nanos now) noexcept {
+  const Nanos elapsed = std::max<Nanos>(0, now - n.last_arrival);
+  const Nanos windows = elapsed / n.config.rate_window + 1;
+  const Nanos limit = static_cast<Nanos>(rate_limit(n.config));
+  // windows <= 2^62 / 10 ms and limit < 2^31: cap before multiplying.
+  const Nanos cap = kSeqBehind / 2;
+  if (windows >= cap / limit) return static_cast<std::uint32_t>(cap);
+  return static_cast<std::uint32_t>(std::min(cap, windows * limit));
+}
+
 void Detector::stale(std::size_t index, Nanos now, std::uint32_t seq) noexcept {
   NodeState& n = nodes_[index];
-  ++n.seq_faults;
+  n.seq_faults = std::min(n.seq_faults + 1, kMaxSeqFaults);
   n.good_run = 0;
   if (!n.reorder_latched) {
     n.reorder_latched = true;

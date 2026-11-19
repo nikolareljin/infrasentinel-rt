@@ -11,7 +11,7 @@ fixed-size state record; the library allocates nothing after construction.
 | Call | When |
 |---|---|
 | `on_message(node, boot, seq, now)` | a message with a valid signature arrived |
-| `on_tick(now)` | a timer fired; the OS layer arms it to `deadline(node)` |
+| `on_tick(now)` | a timer fired; the OS layer keeps one timer armed to `next_tick()` |
 
 ## Rules
 
@@ -31,7 +31,12 @@ The boot id is a counter the node keeps in flash and raises on every start. A
 higher counter is a restart; a lower one is an old message replayed and is
 treated as stale. Messages are signed, so only the node can raise its counter.
 Sequence numbers are compared as serial numbers, so the wrap from 4294967295
-to 0 is forward.
+to 0 is forward. A forward step is accepted only up to what the storm limit
+allows for the time since the last message (one rate window more than has
+passed); a bigger jump is an old message from far back in a long boot and is
+stale. After a long outage the allowance grows with the outage, so a node
+whose messages were lost meanwhile is accepted. The first message after the
+engine starts has nothing to compare against and is accepted as it is.
 
 ## Liveness and the baseline
 
@@ -51,7 +56,8 @@ Every arrival, valid or not, counts toward the storm rate. A missing node
 raises no storm; when it goes missing during one, the storm state is dropped
 and its return reports the missing node as recovered.
 
-`add_node` refuses a period or rate window above one hour, more than 1000
+`add_node` refuses a period or rate window above one hour, a rate window
+under 10 ms, more than 1000
 miss periods, a degrade factor above 400 (k = 100), and a zero warm-up or
 streak.
 
@@ -73,6 +79,7 @@ subtract:
 - jitter, after warm-up: `min(40, 100 * deviation / period)`
 - 30 while degrading
 - 20 while storming
-- `min(20, 5 * sequence faults)`; one fault is forgiven per 10 good messages
+- `min(20, 5 * sequence faults)`; faults are counted up to 4, and one is
+  forgiven per 10 good messages
 
 The result is clamped to 0-100.
