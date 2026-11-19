@@ -1,0 +1,25 @@
+# secrets and per-machine config: never committed
+.env
+.env.*
+!.env.example
+secrets.h
+*.pem
+*.key
+
+# build output
+build/
+build-*/
+out/
+site/
+.cache/
+.venv/
+node_modules/
+dist/
+.pio/
+__pycache__/
+*.pyc
+
+# editor and OS
+.vscode/
+.idea/
+.DS_Store
