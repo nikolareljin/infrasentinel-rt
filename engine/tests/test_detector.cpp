@@ -275,17 +275,18 @@ TEST_CASE("a slow node gets a storm limit of at least 5") {
   CHECK(r.count(AlertKind::kStorm) == 1);
 }
 
-TEST_CASE("sequence numbers wrap without a fault") {
+TEST_CASE("a node restarts its sequence by raising the boot counter") {
   Recorder r;
   Detector d(r);
   d.add_node("esp01", period_ms(100));
-  std::uint32_t seq = 0xFFFFFFFDu;
+  std::uint32_t seq = 0x7FFFFFFDu;
   Nanos t = 0;
   d.on_message(0, 1, seq, t);
-  t = feed(d, 0, t, 100 * kMillisecond, 6, seq);  // crosses 0xFFFFFFFF -> 0
+  t = feed(d, 0, t, 100 * kMillisecond, 2, seq);   // up to 0x7FFFFFFF
+  d.on_message(0, 2, 0, t += 100 * kMillisecond);  // new boot, sequence from 0
+  d.on_message(0, 2, 1, t += 100 * kMillisecond);
   CHECK(r.count(AlertKind::kReordered) == 0);
-  CHECK(r.count(AlertKind::kDuplicate) == 0);
-  CHECK(d.node(0).last_seq == seq);
+  CHECK(r.count(AlertKind::kRebooted) == 1);
   CHECK(d.deadline(0) == t + 500 * kMillisecond);
 }
 
@@ -368,9 +369,13 @@ TEST_CASE("time going backwards is ignored") {
   Nanos t = feed(d, 0, 0, 100 * kMillisecond, 25, seq);
   const Nanos mean = d.node(0).mean_interval;
   const Nanos due = d.deadline(0);
-  d.on_message(0, 1, ++seq, t - 50 * kMillisecond);
+  d.on_message(0, 1, seq + 5, t - 50 * kMillisecond);
   CHECK(d.node(0).mean_interval == mean);
   CHECK(d.deadline(0) == due);
+  CHECK(d.node(0).last_seq == seq);                     // the early-stamped seq was not taken
+  d.on_message(0, 1, seq + 1, t + 100 * kMillisecond);  // genuine next message
+  CHECK(r.count(AlertKind::kReordered) == 0);
+  CHECK(d.deadline(0) == t + 600 * kMillisecond);
 }
 
 TEST_CASE("an old-boot replay cannot block a real restart from recovering") {
@@ -469,22 +474,43 @@ TEST_CASE("a replay from far back in a long boot is stale, not proof of life") {
   Detector d(r);
   d.add_node("esp01", period_ms(100));
   d.on_message(0, 1, 10, 0);
-  // in order, each step within what the storm limit allows for the time passed
-  Nanos t = 0;
-  std::uint32_t seq = 10;
-  for (int i = 0; i < 4; ++i) {
-    t += 100 * kMillisecond;
-    seq += 1;
+  d.on_message(0, 1, 3'000'000'000u, 100 * kMillisecond);  // lost messages: still in order
+  const Nanos due = d.deadline(0);
+  d.on_message(0, 1, 11, 101 * kMillisecond);  // recorded early in this boot
+  CHECK(d.deadline(0) == due);
+  CHECK(d.node(0).last_seq == 3'000'000'000u);
+  CHECK(r.count(AlertKind::kReordered) == 1);
+  d.on_message(0, 1, 3'000'000'001u, 200 * kMillisecond);
+  CHECK(d.deadline(0) == 700 * kMillisecond);
+}
+
+TEST_CASE("a burst with heavy loss stays in order and alive") {
+  Recorder r;
+  Detector d(r);
+  d.add_node("esp01", period_ms(100));
+  std::uint32_t seq = 0;
+  Nanos t = feed_ticking(d, 0, 0, 100 * kMillisecond, 20, seq);
+  for (int i = 0; i < 60; ++i) {  // sends every 1 ms, one in 60 arrives
+    seq += 60;
+    t += 60 * kMillisecond;
+    tick_until(d, t);
     d.on_message(0, 1, seq, t);
   }
-  const Nanos due = d.deadline(0);
-  d.on_message(0, 1, seq + 1000000u, t + kMillisecond);  // far more than 1 ms allows
-  CHECK(d.deadline(0) == due);
-  CHECK(d.node(0).last_seq == seq);
-  CHECK(r.count(AlertKind::kReordered) == 1);
-  d.on_message(0, 1, seq + 1, t + 100 * kMillisecond);  // genuine traffic still counts
-  CHECK(d.deadline(0) == t + 600 * kMillisecond);
   CHECK(r.count(AlertKind::kMissing) == 0);
+  CHECK(r.count(AlertKind::kReordered) == 0);
+}
+
+TEST_CASE("times outside the usable range are ignored") {
+  Recorder r;
+  Detector d(r);
+  d.add_node("esp01", period_ms(100));
+  d.on_message(0, 1, 1, -5);
+  d.on_message(0, 1, 2, INT64_MAX - isrt::kSecond);
+  CHECK(!d.node(0).seen);
+  d.on_message(0, 1, 3, 100);
+  d.on_tick(INT64_MAX);
+  CHECK(r.count(AlertKind::kMissing) == 0);
+  CHECK(d.deadline(0) == 100 + 500 * kMillisecond);
 }
 
 TEST_CASE("a node back after a long outage may have advanced its sequence a lot") {
@@ -527,18 +553,20 @@ TEST_CASE("a message stamped before an outage does not end it") {
   feed(d, 0, 0, 100 * kMillisecond, 3, seq);  // last at 300 ms
   tick_until(d, 2 * isrt::kSecond);
   CHECK(r.count(AlertKind::kMissing) == 1);
-  d.on_message(0, 1, ++seq, 150 * kMillisecond);  // same boot, stamped earlier
-  d.on_message(0, 2, 1, 160 * kMillisecond);      // a restart, stamped earlier
+  d.on_message(0, 1, seq + 1, 150 * kMillisecond);  // same boot, stamped earlier
+  d.on_message(0, 2, 1, 160 * kMillisecond);        // a restart, stamped earlier
+  CHECK(d.node(0).boot == 1);
+  CHECK(r.count(AlertKind::kRebooted) == 0);
   tick_until(d, 3 * isrt::kSecond);
   CHECK(d.node(0).missing);
   CHECK(r.count(AlertKind::kRecovered) == 0);
   CHECK(r.count(AlertKind::kMissing) == 1);
-  d.on_message(0, 2, 2, 3 * isrt::kSecond + 1);
+  d.on_message(0, 1, seq + 1, 3 * isrt::kSecond + 1);  // genuine, same boot
   CHECK(!d.node(0).missing);
   CHECK(r.count(AlertKind::kRecovered) == 1);
 }
 
-TEST_CASE("the forward allowance reaches the whole serial window") {
+TEST_CASE("any number of lost messages is in order") {
   Recorder r;
   Detector d(r);
   NodeConfig c = period_ms(1);

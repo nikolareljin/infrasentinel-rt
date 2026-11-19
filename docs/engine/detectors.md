@@ -8,7 +8,8 @@ fixed-size state record; the library allocates nothing after construction.
 
 ## Inputs
 
-Time (`now`) is monotonic nanoseconds, never negative.
+Time (`now`) is monotonic nanoseconds. Times below 0 or above `INT64_MAX / 2`
+(about 146 years) are ignored, so no sum of a time and a span overflows.
 
 | Call | When |
 |---|---|
@@ -32,23 +33,20 @@ Time (`now`) is monotonic nanoseconds, never negative.
 The boot id is a counter the node keeps in flash and raises on every start. A
 higher counter is a restart; a lower one is an old message replayed and is
 treated as stale. Messages are signed, so only the node can raise its counter.
-Sequence numbers are compared as serial numbers, so the wrap from 4294967295
-to 0 is forward. A forward step is accepted only up to what the storm limit
-allows for the time since the last message (one rate window more than has
-passed); a bigger jump is an old message from far back in a long boot and is
-stale. After a long outage the allowance grows with the outage, so a node
-whose messages were lost meanwhile is accepted. The first message after the
-engine starts has nothing to compare against and is accepted as it is; if it
-was a replay, real traffic is stale until the allowance has grown past the
-gap. More than 2^31 lost sequence numbers cannot be ordered at all; a node
-that restarts raises its boot counter, which resets the comparison.
+Within one boot the sequence only rises. Before it would reach 2^31 the node
+raises its boot counter and starts the sequence again at 0, so a sequence
+never wraps inside a boot. Any number of lost messages is therefore in order,
+and a lower number than the last one is always a replayed message (stale).
+The first message after the engine starts has nothing to compare against and
+is accepted as it is.
 
 ## Liveness and the baseline
 
 Every in-order message moves the deadline. A duplicate or stale message does
 not: a replayed message is not proof that the node is alive. A message
-stamped no later than the last arrival moves nothing and does not end an
-outage.
+stamped no later than the last arrival changes nothing: not the sequence,
+the boot counter, the alerts or the deadline; it only counts toward the storm
+rate.
 
 Mean and deviation are exponentially weighted (alpha 1/16) and are updated
 only by normal intervals, so a slow streak does not teach the baseline to

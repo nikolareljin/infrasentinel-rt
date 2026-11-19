@@ -137,7 +137,6 @@ class Detector {
   void recovered(std::size_t node, Nanos now, AlertKind cleared, std::uint32_t count = 0) noexcept;
   void update_timing(std::size_t index, Nanos now) noexcept;
   void stale(std::size_t index, Nanos now, std::uint32_t seq) noexcept;
-  static std::uint32_t max_seq_step(const NodeState& n, Nanos now) noexcept;
   void advance_rate(NodeState& n, Nanos now) noexcept;
   void check_storm(std::size_t index, Nanos now) noexcept;
   static std::uint32_t rate_count(const NodeState& n) noexcept;

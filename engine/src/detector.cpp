@@ -11,11 +11,11 @@ Nanos abs_nanos(Nanos v) noexcept { return v < 0 ? -v : v; }
 // EWMA step with alpha 1/16, in integers.
 Nanos ewma(Nanos mean, Nanos sample) noexcept { return mean + (sample - mean) / 16; }
 
-// Serial-number distance (RFC 1982 style): how far `a` is ahead of `b`, with
-// the wrap from 0xFFFFFFFF to 0 counted as forward. 0 means equal; a value of
-// 2^31 or more means `a` is behind `b`. Unsigned only, so it is portable.
-std::uint32_t seq_ahead(std::uint32_t a, std::uint32_t b) noexcept { return a - b; }
-constexpr std::uint32_t kSeqBehind = 0x80000000u;
+// Times beyond this (about 146 years of monotonic clock) are ignored, so every
+// sum of a time and a configured span stays inside int64.
+constexpr Nanos kMaxNow = INT64_MAX / 2;
+
+bool usable_time(Nanos now) noexcept { return now >= 0 && now <= kMaxNow; }
 
 // Faults counted toward health; the penalty stops at 20 (4 faults) anyway.
 constexpr std::uint32_t kMaxSeqFaults = 4;
@@ -199,7 +199,7 @@ void Detector::update_timing(std::size_t index, Nanos now) noexcept {
 
 void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t seq,
                           Nanos now) noexcept {
-  if (index >= count_) return;
+  if (index >= count_ || !usable_time(now)) return;
   NodeState& n = nodes_[index];
 
   // Every arrival counts toward the rate, valid or not; a missing node raises
@@ -216,6 +216,10 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     return;
   }
 
+  // A message stamped no later than the last arrival moves nothing: no
+  // sequence, boot, latch or liveness state.
+  if (now <= n.last_arrival) return;
+
   // The boot id is a counter the node keeps across restarts: a higher one is a
   // restart, a lower one is an old message replayed and proves nothing.
   if (boot < n.boot) {
@@ -228,9 +232,6 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     n.duplicate_latched = false;
     n.reorder_latched = false;
     emit(AlertKind::kRebooted, Severity::kInfo, index, now, 0, seq);
-    // A message stamped no later than the last arrival moves nothing, so it
-    // cannot end an outage either.
-    if (now <= n.last_arrival) return;
     n.last_arrival = now;  // the gap across a restart is not a sample
     if (n.missing) {
       n.missing = false;
@@ -239,8 +240,10 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     return;
   }
 
-  const std::uint32_t ahead = seq_ahead(seq, n.last_seq);
-  if (ahead == 0) {
+  // Within one boot the sequence only rises: the node raises its boot counter
+  // and starts again at 0 before the sequence would wrap. So any number of lost
+  // messages is in order, and an older number is always a replay.
+  if (seq == n.last_seq) {
     n.seq_faults = std::min(n.seq_faults + 1, kMaxSeqFaults);
     n.good_run = 0;
     if (!n.duplicate_latched) {
@@ -249,10 +252,7 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
     }
     return;  // a repeated message does not prove the node is alive
   }
-  // A node cannot move its sequence faster than the storm limit allows for the
-  // time that passed; a bigger jump is an old message from far back in this
-  // boot (the serial window has gone round) and proves nothing.
-  if (ahead >= kSeqBehind || ahead > max_seq_step(n, now)) {
+  if (seq < n.last_seq) {
     stale(index, now, seq);
     return;
   }
@@ -265,23 +265,12 @@ void Detector::on_message(std::size_t index, std::uint64_t boot, std::uint32_t s
   }
 
   if (n.missing) {
-    if (now <= n.last_arrival) return;  // stamped before the outage: moves nothing
     n.missing = false;
     n.last_arrival = now;  // the silent gap is not a sample
     recovered(index, now, AlertKind::kMissing);
     return;
   }
   update_timing(index, now);
-}
-
-std::uint32_t Detector::max_seq_step(const NodeState& n, Nanos now) noexcept {
-  const Nanos elapsed = std::max<Nanos>(0, now - n.last_arrival);
-  const Nanos windows = elapsed / n.config.rate_window + 1;
-  const Nanos limit = static_cast<Nanos>(rate_limit(n.config));
-  // windows <= 2^62 / 10 ms and limit < 2^31: cap before multiplying.
-  const Nanos cap = kSeqBehind - 1;  // the whole serial window
-  if (windows >= cap / limit) return static_cast<std::uint32_t>(cap);
-  return static_cast<std::uint32_t>(std::min(cap, windows * limit));
 }
 
 void Detector::stale(std::size_t index, Nanos now, std::uint32_t seq) noexcept {
@@ -295,6 +284,7 @@ void Detector::stale(std::size_t index, Nanos now, std::uint32_t seq) noexcept {
 }
 
 void Detector::on_tick(Nanos now) noexcept {
+  if (!usable_time(now)) return;
   for (std::size_t i = 0; i < count_; ++i) {
     NodeState& n = nodes_[i];
     const Nanos due = deadline(i);
