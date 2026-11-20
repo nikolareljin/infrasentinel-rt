@@ -174,7 +174,7 @@ TEST_CASE("storm alerts once above the limit") {
   CHECK(r.count(AlertKind::kStorm) == 1);  // once per storm
 }
 
-TEST_CASE("a storm clears on a timer tick while the node is still alive") {
+TEST_CASE("a storm clears on a timer tick before the node is missing") {
   Recorder r;
   Detector d(r);
   NodeConfig c = period_ms(100);
@@ -191,6 +191,21 @@ TEST_CASE("a storm clears on a timer tick while the node is still alive") {
   CHECK(!d.node(0).missing);
   CHECK(r.count(AlertKind::kRecovered) == 1);
   CHECK(r.alerts.back().cleared == AlertKind::kStorm);
+}
+
+TEST_CASE("a storm clears while the node keeps sending at its cadence") {
+  Recorder r;
+  Detector d(r);
+  NodeConfig c = period_ms(100);
+  c.rate_window = 1000 * kMillisecond;  // limit 50
+  d.add_node("esp01", c);
+  std::uint32_t seq = 0;
+  Nanos t = feed_ticking(d, 0, 0, 2 * kMillisecond, 100, seq);  // flood
+  CHECK(d.node(0).storming);
+  feed_ticking(d, 0, t, 100 * kMillisecond, 20, seq);  // back to cadence
+  CHECK(!d.node(0).storming);
+  CHECK(r.count(AlertKind::kMissing) == 0);
+  CHECK(r.count(AlertKind::kRecovered) == 1);
 }
 
 TEST_CASE("a storm clears with a limit of 1") {
@@ -537,7 +552,8 @@ TEST_CASE("sequence faults stop counting at the health floor") {
   Nanos t = feed(d, 0, 0, 100 * kMillisecond, 3, seq);
   for (int i = 1; i <= 100; ++i) d.on_message(0, 1, seq, t + i);
   CHECK(d.node(0).seq_faults == 4);
-  CHECK(d.health(0) >= 0);
+  // 103 arrivals in the window are a storm too: 100 - 20 (storm) - 20 (four faults)
+  CHECK(d.health(0) == 60);
 }
 
 TEST_CASE("add_node refuses a rate window under 10 ms") {

@@ -19,7 +19,7 @@ check() {
 help_lists_commands() {
   local out
   out="$("$root/dev" help)"
-  [[ "$out" == *"build"* && "$out" == *"test-engine"* && "$out" == *"docs"* ]]
+  [[ "$out" == *"build"* && "$out" == *"test-engine"* && "$out" == *"docs"* && "$out" == *"scenario"* ]]
 }
 
 unknown_command_exits_2() {

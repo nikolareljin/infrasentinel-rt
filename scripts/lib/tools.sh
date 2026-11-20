@@ -7,7 +7,9 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # need <command> [hint]: stop with a hint when the command is missing.
 need() {
   have "$1" && return 0
-  die "$1 is required${2:+ ($2)}"
+  local hint=""
+  [[ -n "${2:-}" ]] && hint=" ($2)"
+  die "$1 is required$hint"
 }
 
 # run_tool <command> <docker image> [args...]: run the command from PATH, or
@@ -21,7 +23,9 @@ run_tool() {
     # Images that set the tool as their entrypoint take only the arguments.
     local entry
     docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
-    entry="$(docker image inspect -f '{{join .Config.Entrypoint " "}}' "$image")"
+    local format='{{json .Config.Entrypoint}}'
+    entry="$(docker image inspect -f "$format" "$image")"
+    [[ "$entry" == null || "$entry" == "[]" ]] && entry=""
     if [[ -n "$entry" ]]; then
       docker run --rm -u "$(id -u):$(id -g)" -v "$ISRT_ROOT:/src" -w /src "$image" "$@"
     else
