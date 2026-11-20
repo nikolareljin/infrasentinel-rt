@@ -5,7 +5,8 @@
 ### Added
 
 - `isrt replay`: runs an event stream through the detector with timer ticks
-  where a real timer would fire; `Detector::next_tick()` for the OS timer.
+  where a real timer would fire; strict input (whole unsigned numbers within
+  the detector's limits, plain node names, a closing `end` line).
 - Simulator scenarios (normal, offline, degrading, storm, duplicate, reboot,
   replay of an old boot) and `./dev scenario <name>`; CI runs each through the
   engine and checks the alerts.
