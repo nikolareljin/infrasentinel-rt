@@ -51,10 +51,12 @@ class Scenario:
         """(time_ns, line) pairs, time-sorted; node lines first."""
         rng = random.Random(self.seed)
         out: list[tuple[int, str]] = [(-1, f"node {n.name} {n.period_ms}") for n in self.nodes]
+        end = int(self.duration * S)
         for node in self.nodes:
-            out.extend(self._stream(node, rng))
+            # Copies sent just after a message can fall past the end; drop them.
+            out.extend(e for e in self._stream(node, rng) if e[0] <= end)
         out.sort(key=lambda e: e[0])
-        out.append((int(self.duration * S), f"end {int(self.duration * S)}"))
+        out.append((end, f"end {end}"))
         return out
 
     def lines(self) -> Iterator[str]:

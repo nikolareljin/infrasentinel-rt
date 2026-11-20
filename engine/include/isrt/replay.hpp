@@ -18,8 +18,8 @@
 
 namespace isrt {
 
-// Returns 0 on success, 1 on a malformed input line or a detector that does
-// not advance (reported on `err`).
+// Returns 0 after `end`; 1 on a malformed input line, input without `end`, or
+// a detector that does not advance (reported on `err`).
 int replay(std::istream& in, std::ostream& out, std::ostream& err);
 
 }  // namespace isrt

@@ -19,7 +19,8 @@ Times are monotonic nanoseconds up to `kMaxMessageTime` (INT64_MAX / 2, about
 146 years) and must not decrease. Numbers are whole
 words with no sign: `seq` fits in 32 bits, `boot_hex` in 64, `period_ms` is at
 most one hour. Node names use letters, digits, `-`, `_` and `.`. A malformed line, including extra words, stops the run with
-exit code 1 and the line number on standard error.
+exit code 1 and the line number on standard error; so does input that ends
+without an `end` line.
 
 ## Output
 

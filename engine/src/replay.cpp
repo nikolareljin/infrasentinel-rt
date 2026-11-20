@@ -152,7 +152,8 @@ int replay(std::istream& in, std::ostream& out, std::ostream& err) {
       return fail("unknown verb");
     }
   }
-  return 0;
+  ++number;
+  return fail("input ended without an end line");  // a cut-off stream is not a result
 }
 
 }  // namespace isrt
