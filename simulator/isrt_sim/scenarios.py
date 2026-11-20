@@ -86,7 +86,8 @@ class Scenario:
             # The node itself floods (a firmware fault): its own boot, rising seq.
             nonlocal seq
             for i, f in enumerate(floods):
-                while flood_next[i] < min(until, f.stop):
+                stop = f.stop if f.stop else until  # stop 0.0: open-ended
+                while flood_next[i] < min(until, stop):
                     seq += 1
                     emit(flood_next[i], boot, seq)
                     flood_next[i] += 1 / f.rate
@@ -107,7 +108,7 @@ class Scenario:
             for i, f in enumerate(self._faults(node.name, "reboot")):
                 if i not in rebooted and t >= f.start:
                     rebooted.add(i)
-                    boot, seq = f"{i + 2:x}", 0
+                    boot, seq = f"{int(boot, 16) + 1:x}", 0  # the counter only rises
             seq += 1
             if self._active(node.name, "offline", t):
                 continue  # the node sends, the link loses it: seq still rises

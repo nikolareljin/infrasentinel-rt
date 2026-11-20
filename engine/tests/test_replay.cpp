@@ -69,6 +69,9 @@ TEST_CASE("replay refuses numbers the stream would half-read") {
   CHECK(run(head + "msg 12abc esp01 1 2\n").rc == 1);
   CHECK(run(head + "msg -5 esp01 1 2\n").rc == 1);
   CHECK(run("node esp01 -100\n").rc == 1);
+  CHECK(has(run("node a\"b 100\n").err, "line 1: node names use"));
+  CHECK(run("node a\\b 100\n").rc == 1);
+  CHECK(run("node esp-01_a.b 100\nend 0\n").rc == 0);
   CHECK(run("node esp01 100 -1\n").rc == 1);
   CHECK(run("node esp01 99999999999999\n").rc == 1);
   CHECK(run(head + "msg 1 esp01 FFFFFFFFFFFFFFFF 4294967295\nend 1\n").rc == 0);

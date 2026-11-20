@@ -66,6 +66,16 @@ bool parse_number(const std::string& word, int base, std::uint64_t max, std::uin
   return true;
 }
 
+// Node names go into the JSON output unescaped, so only plain characters.
+bool plain_name(const std::string& name) {
+  for (const char ch : name) {
+    const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                    (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.';
+    if (!ok) return false;
+  }
+  return true;
+}
+
 constexpr std::uint64_t kMaxPeriodMs = 3'600'000;  // the detector's one-hour cap
 // The detector ignores messages after kMaxMessageTime; refuse them here instead.
 constexpr std::uint64_t kMaxTime = static_cast<std::uint64_t>(kMaxMessageTime);
@@ -100,6 +110,7 @@ int replay(std::istream& in, std::ostream& out, std::ostream& err) {
       if (!(words >> name >> period_word) ||
           !parse_number(period_word, 10, kMaxPeriodMs, period_ms) || period_ms == 0)
         return fail("expected: node <name> <period_ms>");
+      if (!plain_name(name)) return fail("node names use letters, digits, '-', '_' and '.'");
       config.period = static_cast<Nanos>(period_ms) * kMillisecond;
       if (words >> miss_word) {
         if (!parse_number(miss_word, 10, UINT32_MAX, miss))
